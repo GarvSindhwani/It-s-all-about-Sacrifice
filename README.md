@@ -1,0 +1,2 @@
+# It-s-all-about-Sacrifice
+the game is about saving wandering and endangered souls of people the player gets a choice if he wants to save the soul or not however the player loses his health after saving a soul. He must choose wisely risking his own life to save the souls.
