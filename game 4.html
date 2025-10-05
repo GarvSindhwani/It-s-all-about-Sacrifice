@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sacrifice Must Be Made — Playable 2D Story Game</title>
+<style>
+  :root{
+    --bg1:#090909;
+    --bg2:#121212;
+    --accent:#ff6b6b;
+    --muted:#bfbfbf;
+  }
+  html,body{height:100%;margin:0;font-family:Inter, system-ui, monospace;background:linear-gradient(180deg,var(--bg1),var(--bg2));color:#eee}
+  #container{display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px}
+  h1{margin:0;font-size:20px;color:var(--accent);text-shadow:0 0 8px rgba(255,107,107,0.12)}
+  canvas{border-radius:8px;box-shadow:0 6px 30px rgba(0,0,0,0.6);background:linear-gradient(#081018 0%, #0b0b12 100%)}
+  #ui{width:800px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  #soul{font-size:14px;color:var(--muted)}
+  #hint{font-size:13px;color:#bbb}
+  /* Dialogue panel */
+  #dialog{
+    width:760px;
+    max-width:calc(100% - 20px);
+    background:rgba(255,255,255,0.03);
+    border:1px solid rgba(255,255,255,0.04);
+    padding:12px;border-radius:8px;display:none;flex-direction:column;gap:8px;
+    box-shadow:0 12px 40px rgba(0,0,0,0.7);
+  }
+  #dialog p{margin:0;color:#fff}
+  .choices{display:flex;gap:8px;justify-content:center}
+  .choice-btn{
+    padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);
+    background:transparent;color:var(--accent);cursor:pointer;font-weight:600;
+  }
+  .choice-btn:hover{background:var(--accent);color:#000}
+  /* small footer */
+  #footer{font-size:12px;color:#999;width:800px;max-width:calc(100% - 20px);text-align:right}
+  @media(max-width:820px){#ui,#footer,#dialog{width:calc(100% - 20px)} canvas{width:100%}}
+</style>
+</head>
+<body>
+<div id="container">
+  <h1>Sacrifice Must Be Made</h1>
+  <div id="ui">
+    <div id="soul">Soul: <span id="soulVal">100</span> ✦</div>
+    <div id="hint">Move: WASD / Arrows — Interact: E</div>
+  </div>
+
+  <canvas id="game" width="800" height="480"></canvas>
+
+  <div id="dialog">
+    <p id="dialogText"></p>
+    <div class="choices" id="dialogChoices"></div>
+  </div>
+
+  <div id="footer">A beginner-friendly 2D story game — made with canvas</div>
+</div>
+
+<script>
+/* ============================
+   Game: Sacrifice Must Be Made
+   Single-file beginner-friendly
+   ============================ */
+
+// Canvas setup
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// UI elements
+const dialog = document.getElementById('dialog');
+const dialogText = document.getElementById('dialogText');
+const dialogChoices = document.getElementById('dialogChoices');
+const soulValLabel = document.getElementById('soulVal');
+
+// Game state
+const state = {
+  keys: {},
+  player: {
+    x: 120, y: 240, w: 18, h: 32,
+    speed: 2.2,
+    dir: 'down', // up,down,left,right
+    anim: 0,
+    color: '#f6d6c9'
+  },
+  soul: 100,           // resource reduced by sacrifices
+  sacrificesCount: 0,
+  visited: {},         // track visited altars/npcs
+  busy: false,         // when dialogue open
+  time: 0,
+  ended: false
+};
+
+// Simple map objects: altars and a NPC
+const interactables = [
+  { id: 'altar_strength', type: 'altar', x: 360, y: 110, title: 'Altar of Strength',
+    prompt: 'The altar asks: Sacrifice your strength so others may stand? (Lose 30 Soul)' , cost:30 },
+  { id: 'npc_old', type:'npc', x: 640, y: 200, title: 'Old Wanderer',
+    prompt: 'The old wanderer groans: "To save the many, someone must fade... will it be you?" (Lose 20 Soul)', cost:20 },
+  { id: 'altar_freedom', type:'altar', x: 480, y: 380, title: 'Altar of Freedom',
+    prompt: 'A silent altar whispers: Freedom must be traded for order. Will you relinquish your will? (Lose 50 Soul)', cost:50 }
+];
+
+// Input handlers
+window.addEventListener('keydown', e => {
+  state.keys[e.key.toLowerCase()] = true;
+  // open audio on first user input if you add sounds later
+});
+window.addEventListener('keyup', e => state.keys[e.key.toLowerCase()] = false);
+
+// Utility: distance
+function dist(a,b,c,d){ return Math.hypot(a-c,b-d); }
+
+// Draw simple background with subtle tiles
+function drawBackground() {
+  ctx.fillStyle = '#061018';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // faint grid for atmosphere
+  ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+  ctx.lineWidth = 1;
+  for (let x=0;x<canvas.width;x+=40){
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+  }
+  for (let y=0;y<canvas.height;y+=40){
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+  }
+}
+
+// Draw an altar (glowing stone)
+function drawAltar(x,y,color,title) {
+  // glow
+  ctx.beginPath();
+  const g = ctx.createRadialGradient(x,y,10,x,y,70);
+  g.addColorStop(0, color);
+  g.addColorStop(0.6, 'rgba(0,0,0,0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(x-70,y-70,140,140);
+
+  // stone
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.ellipse(x,y,22,14,0,0,Math.PI*2);
+  ctx.fill();
+
+  // gem/pulse
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x,y-6,8,0,Math.PI*2);
+  ctx.fill();
+}
+
+// Draw NPC (simple humanoid silhouette)
+function drawNPC(x,y) {
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(x, y+18, 18, 6, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // body
+  ctx.fillStyle = '#bdb7a9';
+  ctx.fillRect(x-6, y-8, 12, 18); // torso
+  // head
+  ctx.beginPath();
+  ctx.arc(x, y-14, 8, 0, Math.PI*2);
+  ctx.fill();
+}
+
+// Draw a simple human player (body + head + small limbs)
+function drawPlayer(p) {
+  const x = p.x, y = p.y;
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(x, y+14, 16, 5, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // tunic that gets darker with soul loss
+  // as soul decreases, we blend toward dark gray
+  const soul = state.soul;
+  const r = Math.round(246 * (soul/100) + 60*(1 - (soul/100)));
+  const g = Math.round(214 * (soul/100) + 60*(1 - (soul/100)));
+  const b = Math.round(201 * (soul/100) + 60*(1 - (soul/100)));
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+
+  // body
+  ctx.beginPath();
+  ctx.ellipse(x, y, 10, 14, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // head
+  ctx.fillStyle = '#f2dfd4';
+  ctx.beginPath();
+  ctx.arc(x, y-20, 9, 0, Math.PI*2);
+  ctx.fill();
+
+  // eyes small
+  ctx.fillStyle = '#1b1b1b';
+  ctx.fillRect(x-4, y-22, 2, 2);
+  ctx.fillRect(x+2, y-22, 2, 2);
+
+  // simple legs - animate a bit with anim value
+  const step = Math.sin(state.time * 8) * 2 * (state.keys['arrowup'] || state.keys['arrowdown'] || state.keys['w'] || state.keys['s'] || state.keys['a'] || state.keys['d'] ? 1 : 0);
+  ctx.strokeStyle = '#2a2a2a';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x-4, y+12);
+  ctx.lineTo(x-4, y+22 + step);
+  ctx.moveTo(x+4, y+12);
+  ctx.lineTo(x+4, y+22 - step);
+  ctx.stroke();
+}
+
+// Draw UI: soul meter and subtle vignette
+function drawUI() {
+  // vignette
+  const vg = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 100, canvas.width/2, canvas.height/2, Math.max(canvas.width,canvas.height));
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.35)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+}
+
+// Check interactive objects near player
+function getNearby() {
+  const px = state.player.x, py = state.player.y;
+  for (const obj of interactables) {
+    if (dist(px,py,obj.x,obj.y) < 42) return obj;
+  }
+  return null;
+}
+
+// Open dialogue with choices
+function openDialog(obj) {
+  state.busy = true;
+  dialog.style.display = 'flex';
+  dialogText.textContent = obj.prompt;
+  dialogChoices.innerHTML = '';
+
+  // If already used -> show different text
+  if (state.visited[obj.id]) {
+    const p = document.createElement('p');
+    p.textContent = 'You already faced this place. There is nothing more to do here.';
+    dialogChoices.appendChild(p);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'choice-btn';
+    closeBtn.textContent = 'Close';
+    closeBtn.onclick = closeDialog;
+    dialogChoices.appendChild(closeBtn);
+    return;
+  }
+
+  // Choice: sacrifice
+  const yes = document.createElement('button');
+  yes.className = 'choice-btn';
+  yes.textContent = `Sacrifice (-${obj.cost} Soul)`;
+  yes.onclick = () => { doSacrifice(obj); closeDialog(); };
+  dialogChoices.appendChild(yes);
+
+  // Choice: refuse
+  const no = document.createElement('button');
+  no.className = 'choice-btn';
+  no.textContent = 'Refuse';
+  no.onclick = () => { refuse(obj); closeDialog(); };
+  dialogChoices.appendChild(no);
+}
+
+// Close dialog
+function closeDialog() {
+  dialog.style.display = 'none';
+  state.busy = false;
+}
+
+// Perform sacrifice: reduce soul, mark visited, update state
+function doSacrifice(obj) {
+  state.visited[obj.id] = true;
+  state.soul = Math.max(0, state.soul - obj.cost);
+  state.sacrificesCount++;
+  soulValLabel.textContent = state.soul;
+
+  // small narrative tweak
+  if (obj.type === 'altar') {
+    // visual effect: brief flash (we can implement by changing time variable)
+    flashEffect();
+  }
+
+  // Check for ending conditions
+  checkEndConditions();
+}
+
+// Do nothing (refuse)
+function refuse(obj) {
+  state.visited[obj.id] = true;
+  // maybe small penalty or nothing — here, nothing but narrative could be changed
+}
+
+// Flash effect: briefly increase time to make legs animate and background pulse
+let flashTimer = 0;
+function flashEffect() { flashTimer = 12; }
+
+// End game checks: several ending possibilities
+function checkEndConditions() {
+  // if soul hits zero -> self-sacrifice ending
+  if (state.soul <= 0) {
+    endGame('self');
+    return;
+  }
+  // if all interactables visited and some sacrifices made -> bittersweet ending
+  const allVisited = interactables.every(i => state.visited[i.id]);
+  if (allVisited && state.sacrificesCount > 0) {
+    endGame('worldSaved');
+    return;
+  }
+  // if all visited and no sacrifices -> cruel ending
+  if (allVisited && state.sacrificesCount === 0) {
+    endGame('refuseAll');
+    return;
+  }
+}
+
+// End the game and show final text with restart
+function endGame(kind) {
+  state.ended = true;
+  state.busy = true;
+  dialog.style.display = 'flex';
+
+  if (kind === 'self') {
+    dialogText.textContent = 'You sacrificed everything. Your light fades entirely. The world breathes, but you are gone.';
+  } else if (kind === 'worldSaved') {
+    dialogText.textContent = 'Through loss you brought healing. The land awakens. You remain, changed but at peace.';
+  } else { // refuseAll
+    dialogText.textContent = 'You refused every plea. The world remained unchanged. You walk away heavy with shame.';
+  }
+
+  dialogChoices.innerHTML = '';
+  const restartBtn = document.createElement('button');
+  restartBtn.className = 'choice-btn';
+  restartBtn.textContent = 'Restart';
+  restartBtn.onclick = restartGame;
+  dialogChoices.appendChild(restartBtn);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'choice-btn';
+  closeBtn.textContent = 'Close';
+  closeBtn.onclick = () => { dialog.style.display = 'none'; };
+  dialogChoices.appendChild(closeBtn);
+}
+
+// Restart the game (reset state)
+function restartGame() {
+  state.soul = 100; state.sacrificesCount = 0; state.visited = {}; state.busy = false;
+  state.player.x = 120; state.player.y = 240; state.ended = false; soulValLabel.textContent = state.soul;
+  dialog.style.display = 'none';
+}
+
+// Main update + render loop
+function loop(ts) {
+  state.time = ts / 1000;
+  // Clear
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Background
+  drawBackground();
+
+  // Draw interactables (altars & npc)
+  for (const obj of interactables) {
+    if (obj.type === 'altar') {
+      // color by id for variety
+      const color = obj.id.includes('strength') ? 'rgba(255,107,107,0.85)' : (obj.id.includes('freedom') ? 'rgba(102,255,150,0.85)' : 'rgba(255,170,60,0.85)');
+      drawAltar(obj.x, obj.y, color);
+    } else if (obj.type === 'npc') {
+      drawNPC(obj.x, obj.y);
+    }
+  }
+
+  // Handle movement (only when not in dialog)
+  if (!state.busy && !state.ended) {
+    let moved = false;
+    if (state.keys['arrowup'] || state.keys['w']) { state.player.y -= state.player.speed; state.player.dir='up'; moved=true; }
+    if (state.keys['arrowdown'] || state.keys['s']) { state.player.y += state.player.speed; state.player.dir='down'; moved=true; }
+    if (state.keys['arrowleft'] || state.keys['a']) { state.player.x -= state.player.speed; state.player.dir='left'; moved=true; }
+    if (state.keys['arrowright'] || state.keys['d']) { state.player.x += state.player.speed; state.player.dir='right'; moved=true; }
+    if (moved) state.player.anim += 1;
+
+    // Boundaries
+    state.player.x = Math.max(20, Math.min(canvas.width-20, state.player.x));
+    state.player.y = Math.max(30, Math.min(canvas.height-20, state.player.y));
+  }
+
+  // Draw player
+  drawPlayer(state.player);
+
+  // Draw UI overlay
+  drawUI();
+
+  // Interaction hint
+  const nearby = getNearby();
+  if (nearby && !state.busy && !state.ended) {
+    // draw small hint near player
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '13px monospace';
+    ctx.fillText('Press E to interact', state.player.x - 40, state.player.y - 36);
+    if (state.keys['e']) {
+      openDialog(nearby);
+    }
+  }
+
+  // flash effect overlay when sacrifice happened
+  if (flashTimer > 0) {
+    const alpha = Math.min(0.45, flashTimer / 20);
+    ctx.fillStyle = `rgba(255,180,150,${alpha})`;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    flashTimer--;
+  }
+
+  // Slow fade vignette for mood
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // If paused in dialog show nothing more
+  if (!state.ended) requestAnimationFrame(loop);
+}
+
+// Start first loop
+requestAnimationFrame(loop);
+
+/* ============================
+   End of core game code
+   ============================ */
+
+</script>
+</body>
+</html>
